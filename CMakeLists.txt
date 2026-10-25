@@ -4,6 +4,7 @@ project(adecc-core-lib VERSION 0.1.0 LANGUAGES CXX)
 # Header-only library. Consumers inherit C++23 and the repository-root include path.
 add_library(adecc_core INTERFACE)
 add_library(adecc::core ALIAS adecc_core)
+set_target_properties(adecc_core PROPERTIES EXPORT_NAME core)
 target_compile_features(adecc_core INTERFACE cxx_std_23)
 target_include_directories(adecc_core INTERFACE
    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
@@ -14,6 +15,7 @@ target_include_directories(adecc_core INTERFACE
 foreach(_component IN ITEMS domain mssql postgre openxlsx)
    add_library(adecc_${_component} INTERFACE)
    add_library(adecc::${_component} ALIAS adecc_${_component})
+   set_target_properties(adecc_${_component} PROPERTIES EXPORT_NAME ${_component})
    target_link_libraries(adecc_${_component} INTERFACE adecc::core)
 endforeach()
 
