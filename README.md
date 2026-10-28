@@ -15,6 +15,7 @@ data handling, persistence, and database integration. DeckKernel is one of its c
 | `adecc/cpp_domain/` | Domain types, validation and conversion policies |
 | `adecc/mssql/` | Microsoft SQL Server ODBC adapter headers |
 | `adecc/postgre/` | PostgreSQL/libpqxx adapter headers |
+| `adecc/mariadb/` | MariaDB Connector/C connection adapter (query/output layer pending native validation) |
 | `adecc/openXlsxTools/` | OpenXLSX grid and workbook adapters |
 
 The library itself does not build or distribute binary archives. Depending on
@@ -45,7 +46,7 @@ headers retain their full, stable paths:
 ```
 
 Optional convenience targets: `adecc::domain`, `adecc::mssql`,
-`adecc::postgre`, `adecc::openxlsx`. These are header-only interface
+`adecc::postgre`, `adecc::mariadb`, `adecc::openxlsx`. These are header-only interface
 targets; they do **not** automatically provision third-party libraries.
 
 ### C++Builder / BCC64X
