@@ -2102,11 +2102,23 @@ namespace adecc::db::mssql {
                });
             }
 
+         // SQL Server IMAGE is reported as SQL_LONGVARBINARY by ODBC.
+         // Retain the described binary SQL type, so BINARY, VARBINARY(MAX),
+         // and legacy IMAGE columns all accept the same adecc::Blob value.
+         SQLSMALLINT const iSqlType = aDescriptor.iSqlType != SQL_UNKNOWN_TYPE
+            ? aDescriptor.iSqlType : SQL_LONGVARBINARY;
+         if (iSqlType != SQL_BINARY &&
+             iSqlType != SQL_VARBINARY &&
+             iSqlType != SQL_LONGVARBINARY) {
+            return std::unexpected(error_ty{
+               {}, "error for bind SQL Server BLOB",
+               std::format("parameter {} has non-binary ODBC SQL type {}", uPosition, iSqlType)
+            });
+            }
+
          aStorage.aValue = aValue;
          auto const& aStored = std::get<adecc::Blob>(aStorage.aValue);
          aStorage.iIndicator = static_cast<SQLLEN>(aStored.Size());
-         SQLSMALLINT const iSqlType = aDescriptor.iSqlType != SQL_UNKNOWN_TYPE
-            ? aDescriptor.iSqlType : SQL_LONGVARBINARY;
          SQLRETURN const iResult = SQLBindParameter(
             hStatement,
             uPosition,
