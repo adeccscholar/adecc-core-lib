@@ -42,6 +42,7 @@ license from adecc Systemhaus GmbH.
 #include "database.h"
 #include "system_data_persistent.h"
 #include "database_test_dialects.h"
+#include "db_blob_test.h"
 
 #include <algorithm>
 #include <numeric>
@@ -477,6 +478,10 @@ std::string RunOutputTests(app_db& db,
    PrintRows(db, os);
 
    aTransaction.CommitAndClose();
+
+   if (aDialect != adecc::test::database_dialect::sqlite) {
+      adecc::test::RunBlobTests(db, os, aDialect);
+   }
 
    std::println(os, "");
    std::println(os, "Output tests completed successfully.");
