@@ -41,6 +41,7 @@ license from adecc Systemhaus GmbH.
 
 #include "type_lists.h"
 #include "value_types.h"
+#include "blob_type.h"
 
 #include "piggyback_exceptions.h"
 

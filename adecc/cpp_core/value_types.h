@@ -73,14 +73,16 @@ using defined_values_types = defined_type_list<std::string, std::wstring,
                                                double, money_ty,
                                                int, long long, bool,
                                                unsigned int, unsigned long long,
-                                               date_ty, timestamp_ty, time_ty>;
+                                               date_ty, timestamp_ty, time_ty,
+											   Blob>;
 
 using defined_param_types  = defined_type_list<std::string_view, char const*, std::string,
                                                std::wstring_view, wchar_t const*, std::wstring,
                                                double, money_ty,
                                                int, long long, bool,
                                                unsigned int, unsigned long long,
-                                               date_ty, timestamp_ty, time_ty>;
+                                               date_ty, timestamp_ty, time_ty,
+											   Blob>;
 
 using db_value   = typename defined_values_types::type_variant;
 using db_param   = typename defined_param_types::param_type_variant;
