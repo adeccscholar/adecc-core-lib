@@ -6,6 +6,9 @@
 #include "mariadb_sql.h"
 #include <mysql.h>
 #include <algorithm>
+#include <cstddef>
+#include <cstring>
+#include <type_traits>
 #include <expected>
 #include <limits>
 #include <memory>
@@ -61,24 +64,56 @@ class query {
          if(mysql_stmt_param_count(stmt_.get())!=plan.names.size())
             return std::unexpected(Err("MariaDB","Parameter count mismatch"));
          std::vector<std::optional<std::string>> strings;
+         std::vector<adecc::Blob const*> blobs;
+         std::vector<bool> binary;
+         strings.reserve(plan.names.size());
+         blobs.reserve(plan.names.size());
+         binary.reserve(plan.names.size());
          for(auto const& name:plan.names) {
             auto item=std::ranges::find_if(params,[&](auto const& p){
                return detail::Equal(std::get<0>(p),name);
             });
             if(item==params.end())
                return std::unexpected(Err("MariaDB","Unbound parameter: "+name));
-            strings.emplace_back(std::visit([](auto const& value){
-               return detail::Encode(value);
-            },std::get<1>(*item)));
+            adecc::Blob const* pBlob{};
+            bool boBinary{};
+            auto strValue=std::visit([&]<class T>(T const& value)->std::optional<std::string>{
+               if constexpr(std::same_as<T,adecc::Blob>) {
+                  boBinary=true;
+                  pBlob=&value;
+                  return std::nullopt;
+               }
+               else if constexpr(std::same_as<T,std::optional<adecc::Blob>>) {
+                  boBinary=true;
+                  if(value)pBlob=&*value;
+                  return std::nullopt;
+               }
+               else return detail::Encode(value);
+            },std::get<1>(*item));
+            binary.push_back(boBinary);
+            blobs.push_back(pBlob);
+            strings.push_back(std::move(strValue));
          }
          std::vector<MYSQL_BIND> binds(strings.size());
          std::vector<unsigned long> lengths(strings.size());
          std::unique_ptr<my_bool[]> nulls(new my_bool[strings.size()]{});
          for(std::size_t i=0;i<strings.size();++i) {
-            binds[i].buffer_type=strings[i]?MYSQL_TYPE_STRING:MYSQL_TYPE_NULL;
-            nulls[i]=!strings[i];
+            binds[i].buffer_type=binary[i]?MYSQL_TYPE_BLOB:
+               (strings[i]?MYSQL_TYPE_STRING:MYSQL_TYPE_NULL);
+            nulls[i]=binary[i]?!blobs[i]:!strings[i];
             binds[i].is_null=&nulls[i];
-            if(strings[i]){
+            if(binary[i] && blobs[i]) {
+               auto const aView=blobs[i]->View();
+               if(aView.size()>std::numeric_limits<unsigned long>::max())
+                  return std::unexpected(Err("MariaDB bind","BLOB exceeds Connector/C buffer length"));
+               lengths[i]=static_cast<unsigned long>(aView.size());
+               binds[i].buffer=const_cast<std::byte*>(aView.data());
+               binds[i].buffer_length=lengths[i];
+               binds[i].length=&lengths[i];
+            }
+            else if(strings[i]){
+               if(strings[i]->size()>std::numeric_limits<unsigned long>::max())
+                  return std::unexpected(Err("MariaDB bind","Parameter exceeds Connector/C buffer length"));
                lengths[i]=static_cast<unsigned long>(strings[i]->size());
                binds[i].buffer=strings[i]->data();
                binds[i].buffer_length=lengths[i];
@@ -162,7 +197,16 @@ public:
       for(std::size_t i=0;i<columns_.size();++i)
          if(detail::Equal(columns_[i],name)){
             if(!row_[i])return std::optional<T>{};
-            try{return std::optional<T>{detail::Decode<T>(*row_[i])};}
+            try {
+               if constexpr(std::same_as<T,adecc::Blob>) {
+                  auto const& strData=*row_[i];
+                  std::vector<std::byte> vecData(strData.size());
+                  if(!strData.empty())
+                     std::memcpy(vecData.data(),strData.data(),strData.size());
+                  return std::optional<T>{adecc::Blob{std::move(vecData)}};
+               }
+               else return std::optional<T>{detail::Decode<T>(*row_[i])};
+            }
             catch(std::exception const& e){return std::unexpected(Err("MariaDB field",e.what()));}
          }
       return std::unexpected(Err("MariaDB field","Unknown field "+name));
