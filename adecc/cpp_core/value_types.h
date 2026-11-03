@@ -42,6 +42,7 @@ license from adecc Systemhaus GmbH.
 #include "type_traits_ext.h"
 #include "type_lists.h"
 #include "fixed_numeric.h"
+#include "blob_type.h"
 
 #include "convert_core.h"
 #include "convert_fixed.h"
