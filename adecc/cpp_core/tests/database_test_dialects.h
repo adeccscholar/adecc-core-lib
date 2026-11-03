@@ -48,7 +48,8 @@ namespace adecc::test {
 enum class database_dialect {
    sql_server,
    postgresql,
-   sqlite
+   sqlite,
+   mariadb
    };
 
 [[nodiscard]] constexpr std::string_view DialectName(database_dialect const aDialect) {
@@ -56,6 +57,7 @@ enum class database_dialect {
       case database_dialect::sql_server: return "SQL Server";
       case database_dialect::postgresql: return "PostgreSQL";
       case database_dialect::sqlite:     return "SQLite";
+      case database_dialect::mariadb:    return "MariaDB";
       }
 
    throw std::logic_error { "unknown database test dialect" };
@@ -81,6 +83,16 @@ enum class database_dialect {
             "Name varchar(100) NOT NULL,"
             "Kommentar varchar(200) NULL,"
             "Wert integer NOT NULL"
+            ")";
+
+      case database_dialect::mariadb:
+         return
+            "DROP TABLE IF EXISTS TestDbNeu; "
+            "CREATE TABLE TestDbNeu ("
+            "Id int NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+            "Name varchar(100) NOT NULL,"
+            "Kommentar varchar(200) NULL,"
+            "Wert int NOT NULL"
             ")";
 
       case database_dialect::sqlite:
@@ -121,6 +133,17 @@ enum class database_dialect {
             "WertDoppelt integer GENERATED ALWAYS AS (Wert * 2) STORED"
             ")";
 
+      case database_dialect::mariadb:
+         return
+            "DROP TABLE IF EXISTS TestDbNeu; "
+            "CREATE TABLE TestDbNeu ("
+            "Id int NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+            "Name varchar(100) NOT NULL,"
+            "Kommentar varchar(200) NULL,"
+            "Wert int NOT NULL,"
+            "WertDoppelt int GENERATED ALWAYS AS (Wert * 2) STORED"
+            ")";
+
       case database_dialect::sqlite:
          return
             "DROP TABLE IF EXISTS TestDbNeu; "
@@ -144,6 +167,8 @@ enum class database_dialect {
          return "EXTRACT(YEAR FROM Booking_Date) = :ByYear";
       case database_dialect::sqlite:
          return "CAST(strftime('%Y', Booking_Date) AS INTEGER) = :ByYear";
+      case database_dialect::mariadb:
+         return "YEAR(Booking_Date) = :ByYear";
       }
 
    throw std::logic_error { "unknown database test dialect" };
