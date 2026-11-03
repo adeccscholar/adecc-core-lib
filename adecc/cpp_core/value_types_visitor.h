@@ -72,6 +72,7 @@ namespace details {
 	  else if constexpr (std::same_as<U, adecc::date_ty>)            return "date";
 	  else if constexpr (std::same_as<U, adecc::timestamp_ty>)       return "timestamp";
       else if constexpr (std::same_as<U, adecc::time_ty>)            return "time";
+      else if constexpr (std::same_as<U, adecc::Blob>)               return "Blob";
       else                                                           return "unknown";
       }
 
@@ -129,6 +130,10 @@ public:
 
    return_ty operator()(std::wstring const& s) const {
       return { diagnostic::WideToUtf8(s), "std::wstring" };
+   }
+
+   return_ty operator()(adecc::Blob const& aValue) const {
+      return { aValue.Size() != 0 ? "[Blob Data]" : "", "Blob" };
    }
 
    // Numbers and bool.
