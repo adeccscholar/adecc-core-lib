@@ -1495,6 +1495,10 @@ namespace adecc::db::postgres {
          void operator()(time_ty const& aValue) const {
             pParams->append(adecc::ConvertTo<std::string>(aValue));
             }
+
+         void operator()(adecc::Blob const& aValue) const {
+            pParams->append(pqxx::bytes_view{ aValue.View() });
+            }
          };
 
 
@@ -1556,7 +1560,11 @@ namespace adecc::db::postgres {
       static ty ConvertField_(pqxx::field_ref const& aField) {
          using clean_ty = std::remove_cvref_t<ty>;
 
-         if constexpr (std::same_as<clean_ty, std::string>) {
+         if constexpr (std::same_as<clean_ty, adecc::Blob>) {
+            auto vecBytes = aField.template as<pqxx::bytes>();
+            return adecc::Blob{ std::move(vecBytes) };
+            }
+         else if constexpr (std::same_as<clean_ty, std::string>) {
             return std::string{ aField.view() };
             }
          else if constexpr (std::same_as<clean_ty, std::wstring>) {
