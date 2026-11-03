@@ -1722,6 +1722,7 @@ namespace adecc::db::mssql {
             SQLCHAR,
             std::string,
             std::vector<SQLWCHAR>,
+            adecc::Blob,
             SQL_DATE_STRUCT,
             SQL_TIMESTAMP_STRUCT,
             SQL_TIME_STRUCT
@@ -1991,6 +1992,7 @@ namespace adecc::db::mssql {
                std::same_as<clean_ty, std::wstring> ||
                std::same_as<clean_ty, std::wstring_view> ||
                std::same_as<clean_ty, wchar_t const*>;
+            constexpr bool boBinary = std::same_as<clean_ty, adecc::Blob>;
 
             aStorage.aValue = std::monostate{};
             aStorage.iIndicator = SQL_NULL_DATA;
@@ -1998,10 +2000,10 @@ namespace adecc::db::mssql {
                hStatement,
                uPosition,
                SQL_PARAM_INPUT,
-               boWide ? SQL_C_WCHAR : SQL_C_CHAR,
+               boBinary ? SQL_C_BINARY : (boWide ? SQL_C_WCHAR : SQL_C_CHAR),
                aDescriptor.iSqlType != SQL_UNKNOWN_TYPE
                   ? aDescriptor.iSqlType
-                  : (boWide ? SQL_WVARCHAR : SQL_VARCHAR),
+                  : (boBinary ? SQL_LONGVARBINARY : (boWide ? SQL_WVARCHAR : SQL_VARCHAR)),
                std::max<SQLULEN>(1, aDescriptor.uPrecision),
                aDescriptor.iScale,
                nullptr,
@@ -2086,6 +2088,42 @@ namespace adecc::db::mssql {
             std::wstring_view{ strValue },
             aStorage,
             aDescriptor
+            );
+         }
+
+
+      framework_result_ty BindValue_(SQLUSMALLINT const uPosition,
+                                     adecc::Blob const& aValue,
+                                     bound_value& aStorage,
+                                     detail::parameter_descriptor const& aDescriptor) {
+         if (aValue.Size() > static_cast<std::size_t>(std::numeric_limits<SQLLEN>::max())) {
+            return std::unexpected(error_ty{
+               {}, "error for bind SQL Server BLOB", "binary data exceeds ODBC SQLLEN range"
+               });
+            }
+
+         aStorage.aValue = aValue;
+         auto const& aStored = std::get<adecc::Blob>(aStorage.aValue);
+         aStorage.iIndicator = static_cast<SQLLEN>(aStored.Size());
+         SQLSMALLINT const iSqlType = aDescriptor.iSqlType != SQL_UNKNOWN_TYPE
+            ? aDescriptor.iSqlType : SQL_LONGVARBINARY;
+         SQLRETURN const iResult = SQLBindParameter(
+            hStatement,
+            uPosition,
+            SQL_PARAM_INPUT,
+            SQL_C_BINARY,
+            iSqlType,
+            aDescriptor.uPrecision != 0
+               ? aDescriptor.uPrecision
+               : static_cast<SQLULEN>(std::max<std::size_t>(1, aStored.Size())),
+            aDescriptor.iScale,
+            aStored.Size() != 0 ? const_cast<std::byte*>(aStored.View().data()) : nullptr,
+            static_cast<SQLLEN>(aStored.Size()),
+            &aStorage.iIndicator
+            );
+         return detail::CheckOdbc(
+            iResult, SQL_HANDLE_STMT, hStatement,
+            std::format("SQLBindParameter({}) binary", uPosition), true
             );
          }
 
@@ -2394,7 +2432,10 @@ namespace adecc::db::mssql {
       framework_get_ty<ty> ReadField_(SQLUSMALLINT const uColumn) const {
          using clean_ty = std::remove_cvref_t<ty>;
 
-         if constexpr (std::same_as<clean_ty, std::string>) {
+         if constexpr (std::same_as<clean_ty, adecc::Blob>) {
+            return ReadBlob_(uColumn);
+            }
+         else if constexpr (std::same_as<clean_ty, std::string>) {
             return ReadString_(uColumn);
             }
          else if constexpr (std::same_as<clean_ty, std::wstring>) {
@@ -2523,6 +2564,67 @@ namespace adecc::db::mssql {
             }
 
          return true;
+         }
+
+
+      framework_get_ty<adecc::Blob> ReadBlob_(SQLUSMALLINT const uColumn) const {
+         adecc::Blob aResult;
+         std::array<std::byte, 8192> arrBuffer{};
+
+         for (;;) {
+            SQLLEN iIndicator{};
+            SQLRETURN const iResult = SQLGetData(
+               hStatement, uColumn, SQL_C_BINARY,
+               arrBuffer.data(), static_cast<SQLLEN>(arrBuffer.size()), &iIndicator
+               );
+            if (iResult == SQL_NO_DATA) {
+               return std::optional<adecc::Blob>{ std::move(aResult) };
+               }
+            if (iIndicator == SQL_NULL_DATA) {
+               return std::optional<adecc::Blob>{};
+               }
+            if (iResult != SQL_SUCCESS && iResult != SQL_SUCCESS_WITH_INFO) {
+               return std::unexpected(error_ty{
+                  {}, "error for read SQL Server BLOB",
+                  detail::FormatDiagnostics(
+                     "SQLGetData(binary)", iResult,
+                     detail::CollectDiagnostics(SQL_HANDLE_STMT, hStatement))
+               });
+               }
+
+            if (iResult == SQL_SUCCESS_WITH_INFO) {
+               auto const vecDiagnostics = detail::CollectDiagnostics(SQL_HANDLE_STMT, hStatement);
+               bool const boOnlyTruncation = !vecDiagnostics.empty() &&
+                  std::ranges::all_of(vecDiagnostics, [](detail::diagnostic_record const& aDiag) {
+                     return aDiag.strSqlState == "01004";
+                  });
+               if (!boOnlyTruncation) {
+                  return std::unexpected(error_ty{
+                     {}, "warning while read SQL Server BLOB",
+                     detail::FormatDiagnostics("SQLGetData(binary)", iResult, vecDiagnostics)
+                  });
+                  }
+               aResult.vecData.insert(
+                  aResult.vecData.end(), arrBuffer.begin(), arrBuffer.end()
+                  );
+               continue;
+               }
+
+            if (iIndicator == SQL_NO_TOTAL || iIndicator < 0) {
+               return std::unexpected(error_ty{
+                  {}, "error for read SQL Server BLOB",
+                  "ODBC did not report the final binary chunk length"
+               });
+               }
+            auto const uBytes = std::min<std::size_t>(
+               arrBuffer.size(), static_cast<std::size_t>(iIndicator)
+               );
+            aResult.vecData.insert(
+               aResult.vecData.end(), arrBuffer.begin(),
+               arrBuffer.begin() + static_cast<std::ptrdiff_t>(uBytes)
+               );
+            return std::optional<adecc::Blob>{ std::move(aResult) };
+            }
          }
 
 
