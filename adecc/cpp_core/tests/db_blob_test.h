@@ -45,7 +45,6 @@ namespace adecc::test {
       switch (aDialect) {
          case database_dialect::sql_server:
             return
-               "IF OBJECT_ID('Test_Db_Blob', 'U') IS NOT NULL DROP TABLE Test_Db_Blob; "
                "CREATE TABLE Test_Db_Blob ("
                "Id int NOT NULL PRIMARY KEY, "
                "Payload varbinary(max) NULL, "
@@ -53,7 +52,6 @@ namespace adecc::test {
 
          case database_dialect::postgresql:
             return
-               "DROP TABLE IF EXISTS Test_Db_Blob; "
                "CREATE TABLE Test_Db_Blob ("
                "Id integer NOT NULL PRIMARY KEY, "
                "Payload bytea NULL, "
@@ -61,7 +59,6 @@ namespace adecc::test {
 
          case database_dialect::mariadb:
             return
-               "DROP TABLE IF EXISTS Test_Db_Blob; "
                "CREATE TABLE Test_Db_Blob ("
                "Id int NOT NULL PRIMARY KEY, "
                "Payload longblob NULL, "
@@ -69,7 +66,6 @@ namespace adecc::test {
 
          case database_dialect::sqlite:
             return
-               "DROP TABLE IF EXISTS Test_Db_Blob; "
                "CREATE TABLE Test_Db_Blob ("
                "Id integer NOT NULL PRIMARY KEY, "
                "Payload blob NULL, "
@@ -160,6 +156,7 @@ namespace adecc::test {
          int, std::optional<adecc::Blob>, std::optional<adecc::Blob>
       >;
 
+      db.ExecuteCommand(BlobTestTableDropDdl(aDialect));
       db.ExecuteCommand(BlobTestTableDdl(aDialect));
 
       try {
