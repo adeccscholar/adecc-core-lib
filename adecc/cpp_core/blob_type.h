@@ -3,7 +3,7 @@
 
 /**
 \file blob_type.h
-\brief Blob Type as Value or Parameter for database operations.
+\brief Blob Type as generic Value or Parameter for database operations.
 
 \version 1.0
 \date 03.11.2026
