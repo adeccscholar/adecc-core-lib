@@ -1577,7 +1577,9 @@ namespace adecc::db::postgres {
             return adecc::ConvertTo<clean_ty>(std::string{ aField.view() });
             }
          else if constexpr (std::same_as<clean_ty, date_ty>) {
-            return adecc::ConvertTo<clean_ty>(std::string{ aField.view() });
+            // pqxx field_ref already exposes a stable non-owning text view.
+            // The date parser accepts string_view; avoid an extra allocation.
+            return adecc::ConvertTo<clean_ty>(aField.view());
             }
          else if constexpr (std::same_as<clean_ty, timestamp_ty>) {
             return adecc::ConvertTo<clean_ty>(detail::NormalizePostgresTimestamp(aField.view()));
