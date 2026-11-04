@@ -43,8 +43,15 @@ class query {
       bool boVariable{};
       bool boBinary{};
       bool boBitOne{};
+      std::int8_t iTiny{};
+      std::uint8_t uTiny{};
+      std::int16_t iShort{};
+      std::uint16_t uShort{};
+      std::int32_t iLong{};
+      std::uint32_t uLong{};
       std::int64_t iSigned{};
       std::uint64_t uUnsigned{};
+      float flFloat{};
       double flValue{};
       MYSQL_TIME aTime{};
       std::string strValue{};
@@ -150,14 +157,21 @@ class query {
       }
       switch(aCell.eSqlType) {
          case MYSQL_TYPE_TINY:
+            return aCell.boUnsigned
+               ? ConvertNative<T>(aCell.uTiny) : ConvertNative<T>(aCell.iTiny);
          case MYSQL_TYPE_SHORT:
+         case MYSQL_TYPE_YEAR:
+            return aCell.boUnsigned
+               ? ConvertNative<T>(aCell.uShort) : ConvertNative<T>(aCell.iShort);
          case MYSQL_TYPE_LONG:
          case MYSQL_TYPE_INT24:
+            return aCell.boUnsigned
+               ? ConvertNative<T>(aCell.uLong) : ConvertNative<T>(aCell.iLong);
          case MYSQL_TYPE_LONGLONG:
-         case MYSQL_TYPE_YEAR:
-            if(aCell.boUnsigned) return ConvertNative<T>(aCell.uUnsigned);
-            return ConvertNative<T>(aCell.iSigned);
+            return aCell.boUnsigned
+               ? ConvertNative<T>(aCell.uUnsigned) : ConvertNative<T>(aCell.iSigned);
          case MYSQL_TYPE_FLOAT:
+            return ConvertNative<T>(aCell.flFloat);
          case MYSQL_TYPE_DOUBLE:
             return ConvertNative<T>(aCell.flValue);
          case MYSQL_TYPE_DATE:
@@ -205,6 +219,8 @@ class query {
             MYSQL_BIND aBind{};
             unsigned long uLength{};
             my_bool boNull{};
+            std::int32_t iLong{};
+            std::uint32_t uLong{};
             std::int64_t iSigned{};
             std::uint64_t uUnsigned{};
             double flValue{};
@@ -238,13 +254,24 @@ class query {
                         aCell.aBind.buffer_type=MYSQL_TYPE_TINY;
                         aCell.aBind.buffer=&aCell.iBool;
                      }
-                     else if constexpr(std::same_as<native_ty,int> || std::same_as<native_ty,long long>) {
-                        aCell.iSigned=static_cast<std::int64_t>(aInner);
+                     else if constexpr(std::same_as<native_ty,int>) {
+                        aCell.iLong=aInner;
+                        aCell.aBind.buffer_type=MYSQL_TYPE_LONG;
+                        aCell.aBind.buffer=&aCell.iLong;
+                     }
+                     else if constexpr(std::same_as<native_ty,long long>) {
+                        aCell.iSigned=aInner;
                         aCell.aBind.buffer_type=MYSQL_TYPE_LONGLONG;
                         aCell.aBind.buffer=&aCell.iSigned;
                      }
-                     else if constexpr(std::same_as<native_ty,unsigned int> || std::same_as<native_ty,unsigned long long>) {
-                        aCell.uUnsigned=static_cast<std::uint64_t>(aInner);
+                     else if constexpr(std::same_as<native_ty,unsigned int>) {
+                        aCell.uLong=aInner;
+                        aCell.aBind.buffer_type=MYSQL_TYPE_LONG;
+                        aCell.aBind.is_unsigned=1;
+                        aCell.aBind.buffer=&aCell.uLong;
+                     }
+                     else if constexpr(std::same_as<native_ty,unsigned long long>) {
+                        aCell.uUnsigned=aInner;
                         aCell.aBind.buffer_type=MYSQL_TYPE_LONGLONG;
                         aCell.aBind.is_unsigned=1;
                         aCell.aBind.buffer=&aCell.uUnsigned;
@@ -288,13 +315,24 @@ class query {
                   aCell.aBind.buffer_type=MYSQL_TYPE_TINY;
                   aCell.aBind.buffer=&aCell.iBool;
                }
-               else if constexpr(std::same_as<value_ty,int> || std::same_as<value_ty,long long>) {
-                  aCell.iSigned=static_cast<std::int64_t>(aValue);
+               else if constexpr(std::same_as<value_ty,int>) {
+                  aCell.iLong=aValue;
+                  aCell.aBind.buffer_type=MYSQL_TYPE_LONG;
+                  aCell.aBind.buffer=&aCell.iLong;
+               }
+               else if constexpr(std::same_as<value_ty,long long>) {
+                  aCell.iSigned=aValue;
                   aCell.aBind.buffer_type=MYSQL_TYPE_LONGLONG;
                   aCell.aBind.buffer=&aCell.iSigned;
                }
-               else if constexpr(std::same_as<value_ty,unsigned int> || std::same_as<value_ty,unsigned long long>) {
-                  aCell.uUnsigned=static_cast<std::uint64_t>(aValue);
+               else if constexpr(std::same_as<value_ty,unsigned int>) {
+                  aCell.uLong=aValue;
+                  aCell.aBind.buffer_type=MYSQL_TYPE_LONG;
+                  aCell.aBind.is_unsigned=1;
+                  aCell.aBind.buffer=&aCell.uLong;
+               }
+               else if constexpr(std::same_as<value_ty,unsigned long long>) {
+                  aCell.uUnsigned=aValue;
                   aCell.aBind.buffer_type=MYSQL_TYPE_LONGLONG;
                   aCell.aBind.is_unsigned=1;
                   aCell.aBind.buffer=&aCell.uUnsigned;
@@ -377,19 +415,40 @@ class query {
                b.error=&resultErrors_[i];
                switch(fields[i].type) {
                   case MYSQL_TYPE_TINY:
+                     b.buffer_type=MYSQL_TYPE_TINY;
+                     b.is_unsigned=aCell.boUnsigned;
+                     b.buffer=aCell.boUnsigned
+                        ? static_cast<void*>(&aCell.uTiny) : static_cast<void*>(&aCell.iTiny);
+                     b.buffer_length=sizeof(std::int8_t);
+                     break;
                   case MYSQL_TYPE_SHORT:
+                  case MYSQL_TYPE_YEAR:
+                     b.buffer_type=MYSQL_TYPE_SHORT;
+                     b.is_unsigned=aCell.boUnsigned;
+                     b.buffer=aCell.boUnsigned
+                        ? static_cast<void*>(&aCell.uShort) : static_cast<void*>(&aCell.iShort);
+                     b.buffer_length=sizeof(std::int16_t);
+                     break;
                   case MYSQL_TYPE_LONG:
                   case MYSQL_TYPE_INT24:
+                     b.buffer_type=MYSQL_TYPE_LONG;
+                     b.is_unsigned=aCell.boUnsigned;
+                     b.buffer=aCell.boUnsigned
+                        ? static_cast<void*>(&aCell.uLong) : static_cast<void*>(&aCell.iLong);
+                     b.buffer_length=sizeof(std::int32_t);
+                     break;
                   case MYSQL_TYPE_LONGLONG:
-                  case MYSQL_TYPE_YEAR:
                      b.buffer_type=MYSQL_TYPE_LONGLONG;
                      b.is_unsigned=aCell.boUnsigned;
                      b.buffer=aCell.boUnsigned
-                        ? static_cast<void*>(&aCell.uUnsigned)
-                        : static_cast<void*>(&aCell.iSigned);
+                        ? static_cast<void*>(&aCell.uUnsigned) : static_cast<void*>(&aCell.iSigned);
                      b.buffer_length=sizeof(std::int64_t);
                      break;
                   case MYSQL_TYPE_FLOAT:
+                     b.buffer_type=MYSQL_TYPE_FLOAT;
+                     b.buffer=&aCell.flFloat;
+                     b.buffer_length=sizeof(float);
+                     break;
                   case MYSQL_TYPE_DOUBLE:
                      b.buffer_type=MYSQL_TYPE_DOUBLE;
                      b.buffer=&aCell.flValue;
