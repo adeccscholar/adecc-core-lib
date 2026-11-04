@@ -56,6 +56,7 @@ class query {
       double flValue{};
       MYSQL_TIME aTime{};
       std::string strValue{};
+      std::vector<std::byte> vecBinary{};
    };
    std::vector<native_cell> row_;
    std::vector<MYSQL_BIND> resultBinds_;
@@ -149,18 +150,14 @@ class query {
    template<class T>
    [[nodiscard]] static T ConvertCell(native_cell const& aCell) {
       if(aCell.boBitOne) {
-         if(aCell.strValue.size()!=1)
+         if(aCell.vecBinary.size()!=1)
             throw std::runtime_error{"Invalid MariaDB BIT(1) length"};
-         return ConvertNative<T>(static_cast<bool>(
-            static_cast<unsigned char>(aCell.strValue[0]) != 0));
+         return ConvertNative<T>(aCell.vecBinary[0]!=std::byte{0});
       }
       if(aCell.boVariable) {
          if(aCell.boBinary) {
             if constexpr(std::same_as<T,adecc::Blob>) {
-               std::vector<std::byte> vecBytes(aCell.strValue.size());
-               if(!vecBytes.empty())
-                  std::memcpy(vecBytes.data(),aCell.strValue.data(),vecBytes.size());
-               return adecc::Blob{std::move(vecBytes)};
+               return adecc::Blob{aCell.vecBinary};
             }
             else throw std::runtime_error{"Binary MariaDB value requires Blob"};
          }
@@ -514,6 +511,7 @@ class query {
          auto& aCell=row_[i];
          if(resultNulls_[i]) {
             aCell.strValue.clear();
+            aCell.vecBinary.clear();
             continue;
          }
          if(!aCell.boVariable) {
@@ -521,19 +519,27 @@ class query {
                return std::unexpected(Err("MariaDB fetch","Truncated native scalar"));
             continue;
          }
-         aCell.strValue.resize(resultLengths_[i]);
-         if(aCell.strValue.empty()) continue;
          MYSQL_BIND b{};
          b.buffer_type=aCell.boBinary?MYSQL_TYPE_BLOB:MYSQL_TYPE_STRING;
-         b.buffer=aCell.strValue.data();
-         b.buffer_length=static_cast<unsigned long>(aCell.strValue.size());
+         if(aCell.boBinary) {
+            aCell.vecBinary.resize(resultLengths_[i]);
+            b.buffer=aCell.vecBinary.data();
+            b.buffer_length=static_cast<unsigned long>(aCell.vecBinary.size());
+         }
+         else {
+            aCell.strValue.resize(resultLengths_[i]);
+            b.buffer=aCell.strValue.data();
+            b.buffer_length=static_cast<unsigned long>(aCell.strValue.size());
+         }
+         if(b.buffer_length==0) continue;
          unsigned long uActual{};
          b.length=&uActual;
          if(mysql_stmt_fetch_column(stmt_.get(),&b,static_cast<unsigned int>(i),0))
             return std::unexpected(Err("MariaDB fetch column",mysql_stmt_error(stmt_.get())));
-         if(uActual>aCell.strValue.size())
+         if(uActual>b.buffer_length)
             return std::unexpected(Err("MariaDB fetch column","Truncated variable-length value"));
-         aCell.strValue.resize(uActual);
+         if(aCell.boBinary) aCell.vecBinary.resize(uActual);
+         else aCell.strValue.resize(uActual);
       }
       hasRow_=true;return true;
    }
