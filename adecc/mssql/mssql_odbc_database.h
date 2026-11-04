@@ -2533,7 +2533,23 @@ namespace adecc::db::mssql {
          if (!*aRead) {
             return std::optional<result_ty>{};
             }
-         return std::optional<result_ty>{ static_cast<result_ty>(aValue) };
+         // Preserve native ODBC values; apply adecc conversion only when
+         // the requested C++ type differs, with checked integer narrowing.
+         if constexpr (std::same_as<result_ty, native_ty>) {
+            return std::optional<result_ty>{ aValue };
+            }
+         else if constexpr (std::integral<result_ty> && std::integral<native_ty> &&
+                            !std::same_as<result_ty, bool> && !std::same_as<native_ty, bool>) {
+            if (!std::in_range<result_ty>(aValue)) {
+               return std::unexpected(error_ty{
+                  {}, "error for read SQL Server scalar", "native integer is outside the requested C++ range"
+                  });
+               }
+            return std::optional<result_ty>{ static_cast<result_ty>(aValue) };
+            }
+         else {
+            return std::optional<result_ty>{ adecc::ConvertTo<result_ty>(aValue) };
+            }
          }
 
 
