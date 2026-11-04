@@ -7,6 +7,7 @@
 #include <mysql.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <format>
 #include <string>
@@ -127,6 +128,18 @@ class query {
                         !std::same_as<T,bool> && !std::same_as<U,bool>) {
          if(!std::in_range<T>(aValue))
             throw std::out_of_range{"MariaDB integer out of target range"};
+         return static_cast<T>(aValue);
+      }
+      else if constexpr(std::same_as<T,adecc::money_ty> && std::is_arithmetic_v<U>) {
+         return adecc::money_ty{static_cast<double>(aValue)};
+      }
+      else if constexpr(std::integral<T> && std::floating_point<U>) {
+         if(!std::isfinite(aValue) || std::trunc(aValue)!=aValue ||
+            static_cast<long double>(aValue) <
+               static_cast<long double>(std::numeric_limits<T>::lowest()) ||
+            static_cast<long double>(aValue) >
+               static_cast<long double>(std::numeric_limits<T>::max()))
+            throw std::out_of_range{"MariaDB floating-point value is not an exact target integer"};
          return static_cast<T>(aValue);
       }
       else if constexpr(requires { adecc::ConvertTo<T>(aValue); })
