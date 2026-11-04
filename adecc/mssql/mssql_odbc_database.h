@@ -2440,9 +2440,76 @@ namespace adecc::db::mssql {
          }
 
 
+      template <class target_ty, class native_ty>
+      framework_get_ty<target_ty> ReadNativeConverted_(
+         SQLUSMALLINT const uColumn,
+         SQLSMALLINT const iCType
+      ) const {
+         native_ty aValue{};
+         auto aResult = ReadNative_(uColumn, iCType, aValue);
+         if (!aResult) {
+            return std::unexpected(aResult.error());
+            }
+         if (!*aResult) {
+            return std::optional<target_ty>{};
+            }
+         if constexpr (std::same_as<target_ty, native_ty>) {
+            return std::optional<target_ty>{ aValue };
+            }
+         else if constexpr (std::integral<target_ty> && std::integral<native_ty> &&
+                            !std::same_as<target_ty, bool>) {
+            if (!std::in_range<target_ty>(aValue)) {
+               return std::unexpected(error_ty{
+                  {}, "error for read SQL Server field",
+                  "native integer exceeds the requested C++ target range"
+               });
+               }
+            return std::optional<target_ty>{ static_cast<target_ty>(aValue) };
+            }
+         else if constexpr (requires { adecc::ConvertTo<target_ty>(aValue); }) {
+            return std::optional<target_ty>{ adecc::ConvertTo<target_ty>(aValue) };
+            }
+         else {
+            return std::unexpected(error_ty{
+               {}, "error for read SQL Server field",
+               "unsupported native SQL type to C++ conversion"
+            });
+            }
+         }
+
+
       template <class ty>
       framework_get_ty<ty> ReadField_(SQLUSMALLINT const uColumn) const {
          using clean_ty = std::remove_cvref_t<ty>;
+
+         // Source SQL metadata determines the native ODBC buffer. ConvertTo
+         // is used only if the consumer requests a different C++ scalar.
+         if constexpr (std::same_as<clean_ty, int> ||
+                       std::same_as<clean_ty, long long> ||
+                       std::same_as<clean_ty, unsigned int> ||
+                       std::same_as<clean_ty, unsigned long long> ||
+                       std::same_as<clean_ty, double> ||
+                       std::same_as<clean_ty, bool>) {
+            switch (vecColumns[uColumn - 1].iSqlType) {
+               case SQL_BIT:
+                  return ReadNativeConverted_<clean_ty, SQLCHAR>(uColumn, SQL_C_BIT);
+               case SQL_TINYINT:
+                  return ReadNativeConverted_<clean_ty, SQLCHAR>(uColumn, SQL_C_UTINYINT);
+               case SQL_SMALLINT:
+                  return ReadNativeConverted_<clean_ty, SQLSMALLINT>(uColumn, SQL_C_SSHORT);
+               case SQL_INTEGER:
+                  return ReadNativeConverted_<clean_ty, SQLINTEGER>(uColumn, SQL_C_SLONG);
+               case SQL_BIGINT:
+                  return ReadNativeConverted_<clean_ty, std::int64_t>(uColumn, SQL_C_SBIGINT);
+               case SQL_REAL:
+                  return ReadNativeConverted_<clean_ty, float>(uColumn, SQL_C_FLOAT);
+               case SQL_FLOAT:
+               case SQL_DOUBLE:
+                  return ReadNativeConverted_<clean_ty, double>(uColumn, SQL_C_DOUBLE);
+               default:
+                  break;
+               }
+            }
 
          if constexpr (std::same_as<clean_ty, adecc::Blob>) {
             return ReadBlob_(uColumn);
