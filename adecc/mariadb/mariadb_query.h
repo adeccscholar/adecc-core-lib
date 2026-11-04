@@ -17,6 +17,7 @@
 #include <expected>
 #include <limits>
 #include <memory>
+#include <utility>
 #include <optional>
 #include <ranges>
 #include <tuple>
@@ -76,9 +77,51 @@ class query {
          + std::chrono::seconds{aTime.second};
       return adecc::time_ty{aTime.neg ? -aDuration : aDuration};
    }
+   [[nodiscard]] static MYSQL_TIME BindDate(adecc::date_ty const& aDate) {
+      if(!aDate.ok()) throw std::runtime_error{"Invalid MariaDB date parameter"};
+      MYSQL_TIME aResult{};
+      aResult.year=static_cast<unsigned int>(static_cast<int>(aDate.year()));
+      aResult.month=static_cast<unsigned int>(aDate.month());
+      aResult.day=static_cast<unsigned int>(aDate.day());
+      aResult.time_type=MYSQL_TIMESTAMP_DATE;
+      return aResult;
+   }
+   [[nodiscard]] static MYSQL_TIME BindTimestamp(adecc::timestamp_ty const& aTimestamp) {
+      auto const aDay=std::chrono::floor<std::chrono::days>(aTimestamp);
+      MYSQL_TIME aResult=BindDate(adecc::date_ty{aDay});
+      auto const aSubday=std::chrono::duration_cast<std::chrono::microseconds>(
+         aTimestamp-aDay);
+      auto uTotal=static_cast<std::uint64_t>(aSubday.count());
+      aResult.hour=static_cast<unsigned int>(uTotal/3600000000ULL);
+      uTotal%=3600000000ULL;
+      aResult.minute=static_cast<unsigned int>(uTotal/60000000ULL);
+      uTotal%=60000000ULL;
+      aResult.second=static_cast<unsigned int>(uTotal/1000000ULL);
+      aResult.second_part=static_cast<unsigned long>(uTotal%1000000ULL);
+      aResult.time_type=MYSQL_TIMESTAMP_DATETIME;
+      return aResult;
+   }
+   [[nodiscard]] static MYSQL_TIME BindTime(adecc::time_ty const& aTime) {
+      MYSQL_TIME aResult{};
+      auto const aDuration=aTime.to_duration();
+      aResult.neg=aDuration < std::chrono::seconds::zero();
+      auto const aSeconds=std::chrono::duration_cast<std::chrono::seconds>(
+         aResult.neg ? -aDuration : aDuration).count();
+      aResult.hour=static_cast<unsigned int>(aSeconds/3600);
+      aResult.minute=static_cast<unsigned int>((aSeconds%3600)/60);
+      aResult.second=static_cast<unsigned int>(aSeconds%60);
+      aResult.time_type=MYSQL_TIMESTAMP_TIME;
+      return aResult;
+   }
    template<class T, class U>
    [[nodiscard]] static T ConvertNative(U const& aValue) {
       if constexpr(std::same_as<T,U>) return aValue;
+      else if constexpr(std::integral<T> && std::integral<U> &&
+                        !std::same_as<T,bool> && !std::same_as<U,bool>) {
+         if(!std::in_range<T>(aValue))
+            throw std::out_of_range{"MariaDB integer out of target range"};
+         return static_cast<T>(aValue);
+      }
       else if constexpr(requires { adecc::ConvertTo<T>(aValue); })
          return adecc::ConvertTo<T>(aValue);
       else throw std::runtime_error{"Unsupported MariaDB native type conversion"};
@@ -211,6 +254,24 @@ class query {
                         aCell.aBind.buffer_type=MYSQL_TYPE_DOUBLE;
                         aCell.aBind.buffer=&aCell.flValue;
                      }
+                     else if constexpr(std::same_as<native_ty,adecc::date_ty> ||
+                                       std::same_as<native_ty,adecc::timestamp_ty> ||
+                                       std::same_as<native_ty,adecc::time_ty>) {
+                        if constexpr(std::same_as<native_ty,adecc::date_ty>) {
+                           aCell.aTime=BindDate(aInner);
+                           aCell.aBind.buffer_type=MYSQL_TYPE_DATE;
+                        }
+                        else if constexpr(std::same_as<native_ty,adecc::timestamp_ty>) {
+                           aCell.aTime=BindTimestamp(aInner);
+                           aCell.aBind.buffer_type=MYSQL_TYPE_DATETIME;
+                        }
+                        else {
+                           aCell.aTime=BindTime(aInner);
+                           aCell.aBind.buffer_type=MYSQL_TYPE_TIME;
+                        }
+                        aCell.aBind.buffer=&aCell.aTime;
+                        aCell.aBind.buffer_length=sizeof(MYSQL_TIME);
+                     }
                      else {
                         aCell.strValue=*detail::Encode(aInner);
                         aCell.aBind.buffer_type=MYSQL_TYPE_STRING;
@@ -242,6 +303,24 @@ class query {
                   aCell.flValue=aValue;
                   aCell.aBind.buffer_type=MYSQL_TYPE_DOUBLE;
                   aCell.aBind.buffer=&aCell.flValue;
+               }
+               else if constexpr(std::same_as<value_ty,adecc::date_ty> ||
+                                 std::same_as<value_ty,adecc::timestamp_ty> ||
+                                 std::same_as<value_ty,adecc::time_ty>) {
+                  if constexpr(std::same_as<value_ty,adecc::date_ty>) {
+                     aCell.aTime=BindDate(aValue);
+                     aCell.aBind.buffer_type=MYSQL_TYPE_DATE;
+                  }
+                  else if constexpr(std::same_as<value_ty,adecc::timestamp_ty>) {
+                     aCell.aTime=BindTimestamp(aValue);
+                     aCell.aBind.buffer_type=MYSQL_TYPE_DATETIME;
+                  }
+                  else {
+                     aCell.aTime=BindTime(aValue);
+                     aCell.aBind.buffer_type=MYSQL_TYPE_TIME;
+                  }
+                  aCell.aBind.buffer=&aCell.aTime;
+                  aCell.aBind.buffer_length=sizeof(MYSQL_TIME);
                }
                else {
                   auto aText=detail::Encode(aValue);
