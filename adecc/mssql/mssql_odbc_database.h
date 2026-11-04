@@ -24,6 +24,7 @@
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <concepts>
 #include <cstdint>
 #include <cstring>
@@ -2462,6 +2463,20 @@ namespace adecc::db::mssql {
                return std::unexpected(error_ty{
                   {}, "error for read SQL Server field",
                   "native integer exceeds the requested C++ target range"
+               });
+               }
+            return std::optional<target_ty>{ static_cast<target_ty>(aValue) };
+            }
+         else if constexpr (std::integral<target_ty> && std::floating_point<native_ty> &&
+                            !std::same_as<target_ty, bool>) {
+            if (!std::isfinite(aValue) || std::trunc(aValue) != aValue ||
+                static_cast<long double>(aValue) <
+                   static_cast<long double>(std::numeric_limits<target_ty>::lowest()) ||
+                static_cast<long double>(aValue) >
+                   static_cast<long double>(std::numeric_limits<target_ty>::max())) {
+               return std::unexpected(error_ty{
+                  {}, "error for read SQL Server field",
+                  "floating SQL value is not an exact target integer"
                });
                }
             return std::optional<target_ty>{ static_cast<target_ty>(aValue) };
