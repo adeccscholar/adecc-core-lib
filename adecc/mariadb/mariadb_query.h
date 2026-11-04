@@ -6,6 +6,11 @@
 #include "mariadb_sql.h"
 #include <mysql.h>
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <format>
+#include <string>
+#include <variant>
 #include <cstddef>
 #include <cstring>
 #include <type_traits>
@@ -29,10 +34,100 @@ class query {
    adecc::db_output_parameters output_;
    std::optional<std::size_t> identity_;
    std::vector<std::string> columns_;
-   std::vector<std::optional<std::string>> row_;
+   // Native connector storage. Fixed-size columns are fetched directly into
+   // their C++ representation; only variable-size columns need a second fetch.
+   struct native_cell {
+      enum enum_field_types eSqlType{MYSQL_TYPE_NULL};
+      bool boUnsigned{};
+      bool boVariable{};
+      bool boBinary{};
+      bool boBitOne{};
+      std::int64_t iSigned{};
+      std::uint64_t uUnsigned{};
+      double flValue{};
+      MYSQL_TIME aTime{};
+      std::string strValue{};
+   };
+   std::vector<native_cell> row_;
    std::vector<MYSQL_BIND> resultBinds_;
    std::unique_ptr<unsigned long[]> resultLengths_;
    std::unique_ptr<my_bool[]> resultNulls_,resultErrors_;
+
+   [[nodiscard]] static adecc::date_ty NativeDate(MYSQL_TIME const& aTime) {
+      return adecc::date_ty{
+         std::chrono::year{static_cast<int>(aTime.year)},
+         std::chrono::month{aTime.month},
+         std::chrono::day{aTime.day}
+      };
+   }
+   [[nodiscard]] static adecc::timestamp_ty NativeTimestamp(MYSQL_TIME const& aTime) {
+      auto const aDate = NativeDate(aTime);
+      if(!aDate.ok()) throw std::runtime_error{"Invalid MariaDB date"};
+      return std::chrono::sys_days{aDate}
+         + std::chrono::hours{aTime.hour}
+         + std::chrono::minutes{aTime.minute}
+         + std::chrono::seconds{aTime.second}
+         + std::chrono::microseconds{aTime.second_part};
+   }
+   [[nodiscard]] static adecc::time_ty NativeTime(MYSQL_TIME const& aTime) {
+      auto const aDuration =
+         std::chrono::hours{aTime.hour}
+         + std::chrono::minutes{aTime.minute}
+         + std::chrono::seconds{aTime.second};
+      return adecc::time_ty{aTime.neg ? -aDuration : aDuration};
+   }
+   template<class T, class U>
+   [[nodiscard]] static T ConvertNative(U const& aValue) {
+      if constexpr(std::same_as<T,U>) return aValue;
+      else if constexpr(requires { adecc::ConvertTo<T>(aValue); })
+         return adecc::ConvertTo<T>(aValue);
+      else throw std::runtime_error{"Unsupported MariaDB native type conversion"};
+   }
+   template<class T>
+   [[nodiscard]] static T ConvertCell(native_cell const& aCell) {
+      if(aCell.boBitOne) {
+         if(aCell.strValue.size()!=1)
+            throw std::runtime_error{"Invalid MariaDB BIT(1) length"};
+         return ConvertNative<T>(static_cast<bool>(
+            static_cast<unsigned char>(aCell.strValue[0]) != 0));
+      }
+      if(aCell.boVariable) {
+         if(aCell.boBinary) {
+            if constexpr(std::same_as<T,adecc::Blob>) {
+               std::vector<std::byte> vecBytes(aCell.strValue.size());
+               if(!vecBytes.empty())
+                  std::memcpy(vecBytes.data(),aCell.strValue.data(),vecBytes.size());
+               return adecc::Blob{std::move(vecBytes)};
+            }
+            else throw std::runtime_error{"Binary MariaDB value requires Blob"};
+         }
+         if constexpr(std::same_as<T,std::wstring>)
+            return detail::Utf8ToWide(aCell.strValue);
+         else return ConvertNative<T>(aCell.strValue);
+      }
+      switch(aCell.eSqlType) {
+         case MYSQL_TYPE_TINY:
+         case MYSQL_TYPE_SHORT:
+         case MYSQL_TYPE_LONG:
+         case MYSQL_TYPE_INT24:
+         case MYSQL_TYPE_LONGLONG:
+         case MYSQL_TYPE_YEAR:
+            if(aCell.boUnsigned) return ConvertNative<T>(aCell.uUnsigned);
+            return ConvertNative<T>(aCell.iSigned);
+         case MYSQL_TYPE_FLOAT:
+         case MYSQL_TYPE_DOUBLE:
+            return ConvertNative<T>(aCell.flValue);
+         case MYSQL_TYPE_DATE:
+         case MYSQL_TYPE_NEWDATE:
+            return ConvertNative<T>(NativeDate(aCell.aTime));
+         case MYSQL_TYPE_TIME:
+            return ConvertNative<T>(NativeTime(aCell.aTime));
+         case MYSQL_TYPE_DATETIME:
+         case MYSQL_TYPE_TIMESTAMP:
+            return ConvertNative<T>(NativeTimestamp(aCell.aTime));
+         default: throw std::runtime_error{"Unsupported native MariaDB column"};
+      }
+   }
    bool executed_{},hasRow_{};
 
    [[nodiscard]] static error_ty Err(std::string m,std::string d) {
@@ -63,63 +158,121 @@ class query {
             return std::unexpected(Err("MariaDB prepare",mysql_stmt_error(stmt_.get())));
          if(mysql_stmt_param_count(stmt_.get())!=plan.names.size())
             return std::unexpected(Err("MariaDB","Parameter count mismatch"));
-         std::vector<std::optional<std::string>> strings;
-         std::vector<adecc::Blob const*> blobs;
-         std::vector<bool> binary;
-         strings.reserve(plan.names.size());
-         blobs.reserve(plan.names.size());
-         binary.reserve(plan.names.size());
-         for(auto const& name:plan.names) {
+         struct param_cell {
+            MYSQL_BIND aBind{};
+            unsigned long uLength{};
+            my_bool boNull{};
+            std::int64_t iSigned{};
+            std::uint64_t uUnsigned{};
+            double flValue{};
+            signed char iBool{};
+            MYSQL_TIME aTime{};
+            std::string strValue{};
+            adecc::Blob const* pBlob{};
+         };
+         // Keep every value and its MYSQL_BIND storage stable until execute.
+         std::vector<param_cell> cells(plan.names.size());
+         for(std::size_t i=0;i<plan.names.size();++i) {
+            auto const& name=plan.names[i];
             auto item=std::ranges::find_if(params,[&](auto const& p){
                return detail::Equal(std::get<0>(p),name);
             });
             if(item==params.end())
                return std::unexpected(Err("MariaDB","Unbound parameter: "+name));
-            adecc::Blob const* pBlob{};
-            bool boBinary{};
-            auto strValue=std::visit([&]<class T>(T const& value)->std::optional<std::string>{
-               if constexpr(std::same_as<T,adecc::Blob>) {
-                  boBinary=true;
-                  pBlob=&value;
-                  return std::nullopt;
+            auto& aCell=cells[i];
+            std::visit([&]<class T>(T const& aValue) {
+               using value_ty=std::remove_cvref_t<T>;
+               if constexpr(adecc::is_optional_v<value_ty>) {
+                  if(aValue) {
+                     using native_ty=typename value_ty::value_type;
+                     auto const& aInner=*aValue;
+                     if constexpr(std::same_as<native_ty,adecc::Blob>) {
+                        aCell.pBlob=&aInner;
+                        aCell.aBind.buffer_type=MYSQL_TYPE_BLOB;
+                     }
+                     else if constexpr(std::same_as<native_ty,bool>) {
+                        aCell.iBool=static_cast<signed char>(aInner);
+                        aCell.aBind.buffer_type=MYSQL_TYPE_TINY;
+                        aCell.aBind.buffer=&aCell.iBool;
+                     }
+                     else if constexpr(std::same_as<native_ty,int> || std::same_as<native_ty,long long>) {
+                        aCell.iSigned=static_cast<std::int64_t>(aInner);
+                        aCell.aBind.buffer_type=MYSQL_TYPE_LONGLONG;
+                        aCell.aBind.buffer=&aCell.iSigned;
+                     }
+                     else if constexpr(std::same_as<native_ty,unsigned int> || std::same_as<native_ty,unsigned long long>) {
+                        aCell.uUnsigned=static_cast<std::uint64_t>(aInner);
+                        aCell.aBind.buffer_type=MYSQL_TYPE_LONGLONG;
+                        aCell.aBind.is_unsigned=1;
+                        aCell.aBind.buffer=&aCell.uUnsigned;
+                     }
+                     else if constexpr(std::same_as<native_ty,double>) {
+                        aCell.flValue=aInner;
+                        aCell.aBind.buffer_type=MYSQL_TYPE_DOUBLE;
+                        aCell.aBind.buffer=&aCell.flValue;
+                     }
+                     else {
+                        aCell.strValue=*detail::Encode(aInner);
+                        aCell.aBind.buffer_type=MYSQL_TYPE_STRING;
+                     }
+                  }
+                  else aCell.boNull=1;
                }
-               else if constexpr(std::same_as<T,std::optional<adecc::Blob>>) {
-                  boBinary=true;
-                  if(value)pBlob=&*value;
-                  return std::nullopt;
+               else if constexpr(std::same_as<value_ty,adecc::Blob>) {
+                  aCell.pBlob=&aValue;
+                  aCell.aBind.buffer_type=MYSQL_TYPE_BLOB;
                }
-               else return detail::Encode(value);
+               else if constexpr(std::same_as<value_ty,bool>) {
+                  aCell.iBool=static_cast<signed char>(aValue);
+                  aCell.aBind.buffer_type=MYSQL_TYPE_TINY;
+                  aCell.aBind.buffer=&aCell.iBool;
+               }
+               else if constexpr(std::same_as<value_ty,int> || std::same_as<value_ty,long long>) {
+                  aCell.iSigned=static_cast<std::int64_t>(aValue);
+                  aCell.aBind.buffer_type=MYSQL_TYPE_LONGLONG;
+                  aCell.aBind.buffer=&aCell.iSigned;
+               }
+               else if constexpr(std::same_as<value_ty,unsigned int> || std::same_as<value_ty,unsigned long long>) {
+                  aCell.uUnsigned=static_cast<std::uint64_t>(aValue);
+                  aCell.aBind.buffer_type=MYSQL_TYPE_LONGLONG;
+                  aCell.aBind.is_unsigned=1;
+                  aCell.aBind.buffer=&aCell.uUnsigned;
+               }
+               else if constexpr(std::same_as<value_ty,double>) {
+                  aCell.flValue=aValue;
+                  aCell.aBind.buffer_type=MYSQL_TYPE_DOUBLE;
+                  aCell.aBind.buffer=&aCell.flValue;
+               }
+               else {
+                  auto aText=detail::Encode(aValue);
+                  if(aText) aCell.strValue=std::move(*aText);
+                  else aCell.boNull=1;
+                  aCell.aBind.buffer_type=MYSQL_TYPE_STRING;
+               }
             },std::get<1>(*item));
-            binary.push_back(boBinary);
-            blobs.push_back(pBlob);
-            strings.push_back(std::move(strValue));
-         }
-         std::vector<MYSQL_BIND> binds(strings.size());
-         std::vector<unsigned long> lengths(strings.size());
-         std::unique_ptr<my_bool[]> nulls(new my_bool[strings.size()]{});
-         for(std::size_t i=0;i<strings.size();++i) {
-            binds[i].buffer_type=binary[i]?MYSQL_TYPE_BLOB:
-               (strings[i]?MYSQL_TYPE_STRING:MYSQL_TYPE_NULL);
-            nulls[i]=binary[i]?!blobs[i]:!strings[i];
-            binds[i].is_null=&nulls[i];
-            if(binary[i] && blobs[i]) {
-               auto const aView=blobs[i]->View();
-               if(aView.size()>std::numeric_limits<unsigned long>::max())
-                  return std::unexpected(Err("MariaDB bind","BLOB exceeds Connector/C buffer length"));
-               lengths[i]=static_cast<unsigned long>(aView.size());
-               binds[i].buffer=const_cast<std::byte*>(aView.data());
-               binds[i].buffer_length=lengths[i];
-               binds[i].length=&lengths[i];
-            }
-            else if(strings[i]){
-               if(strings[i]->size()>std::numeric_limits<unsigned long>::max())
-                  return std::unexpected(Err("MariaDB bind","Parameter exceeds Connector/C buffer length"));
-               lengths[i]=static_cast<unsigned long>(strings[i]->size());
-               binds[i].buffer=strings[i]->data();
-               binds[i].buffer_length=lengths[i];
-               binds[i].length=&lengths[i];
+            aCell.aBind.is_null=&aCell.boNull;
+            aCell.aBind.length=&aCell.uLength;
+            if(!aCell.boNull) {
+               if(aCell.pBlob) {
+                  auto const aView=aCell.pBlob->View();
+                  if(aView.size()>std::numeric_limits<unsigned long>::max())
+                     return std::unexpected(Err("MariaDB bind","BLOB exceeds Connector/C buffer length"));
+                  aCell.uLength=static_cast<unsigned long>(aView.size());
+                  aCell.aBind.buffer=const_cast<std::byte*>(aView.data());
+                  aCell.aBind.buffer_length=aCell.uLength;
+               }
+               else if(aCell.aBind.buffer_type==MYSQL_TYPE_STRING) {
+                  if(aCell.strValue.size()>std::numeric_limits<unsigned long>::max())
+                     return std::unexpected(Err("MariaDB bind","Parameter exceeds Connector/C buffer length"));
+                  aCell.uLength=static_cast<unsigned long>(aCell.strValue.size());
+                  aCell.aBind.buffer=aCell.strValue.data();
+                  aCell.aBind.buffer_length=aCell.uLength;
+               }
             }
          }
+         std::vector<MYSQL_BIND> binds;
+         binds.reserve(cells.size());
+         for(auto const& aCell:cells) binds.push_back(aCell.aBind);
          if(!binds.empty()&&mysql_stmt_bind_param(stmt_.get(),binds.data()))
             return std::unexpected(Err("MariaDB bind",mysql_stmt_error(stmt_.get())));
          if(mysql_stmt_execute(stmt_.get()))
@@ -135,10 +288,59 @@ class query {
             for(unsigned int i=0;i<n;++i) {
                columns_.emplace_back(fields[i].name);
                auto& b=resultBinds_[i];
-               b.buffer_type=MYSQL_TYPE_STRING;
+               auto& aCell=row_[i];
+               aCell.eSqlType=fields[i].type;
+               aCell.boUnsigned=(fields[i].flags & UNSIGNED_FLAG)!=0;
+               aCell.boBinary=(fields[i].flags & BINARY_FLAG)!=0;
+               aCell.boBitOne=(fields[i].type==MYSQL_TYPE_BIT && fields[i].length==1);
                b.is_null=&resultNulls_[i];
                b.length=&resultLengths_[i];
                b.error=&resultErrors_[i];
+               switch(fields[i].type) {
+                  case MYSQL_TYPE_TINY:
+                  case MYSQL_TYPE_SHORT:
+                  case MYSQL_TYPE_LONG:
+                  case MYSQL_TYPE_INT24:
+                  case MYSQL_TYPE_LONGLONG:
+                  case MYSQL_TYPE_YEAR:
+                     b.buffer_type=MYSQL_TYPE_LONGLONG;
+                     b.is_unsigned=aCell.boUnsigned;
+                     b.buffer=aCell.boUnsigned
+                        ? static_cast<void*>(&aCell.uUnsigned)
+                        : static_cast<void*>(&aCell.iSigned);
+                     b.buffer_length=sizeof(std::int64_t);
+                     break;
+                  case MYSQL_TYPE_FLOAT:
+                  case MYSQL_TYPE_DOUBLE:
+                     b.buffer_type=MYSQL_TYPE_DOUBLE;
+                     b.buffer=&aCell.flValue;
+                     b.buffer_length=sizeof(double);
+                     break;
+                  case MYSQL_TYPE_DATE:
+                  case MYSQL_TYPE_NEWDATE:
+                  case MYSQL_TYPE_TIME:
+                  case MYSQL_TYPE_DATETIME:
+                  case MYSQL_TYPE_TIMESTAMP:
+                     b.buffer_type=fields[i].type==MYSQL_TYPE_DATE || fields[i].type==MYSQL_TYPE_NEWDATE
+                        ? MYSQL_TYPE_DATE : fields[i].type==MYSQL_TYPE_TIME
+                        ? MYSQL_TYPE_TIME : MYSQL_TYPE_DATETIME;
+                     b.buffer=&aCell.aTime;
+                     b.buffer_length=sizeof(MYSQL_TIME);
+                     break;
+                  default:
+                     // Variable-length text, decimal and binary values are
+                     // fetched as their native bytes, never formatted scalars.
+                     aCell.boVariable=true;
+                     aCell.boBinary=aCell.boBitOne || fields[i].type==MYSQL_TYPE_BIT ||
+                        fields[i].type==MYSQL_TYPE_BLOB ||
+                        fields[i].type==MYSQL_TYPE_TINY_BLOB ||
+                        fields[i].type==MYSQL_TYPE_MEDIUM_BLOB ||
+                        fields[i].type==MYSQL_TYPE_LONG_BLOB ||
+                        fields[i].type==MYSQL_TYPE_GEOMETRY ||
+                        aCell.boBinary;
+                     b.buffer_type=aCell.boBinary?MYSQL_TYPE_BLOB:MYSQL_TYPE_STRING;
+                     break;
+               }
             }
             if(mysql_stmt_bind_result(stmt_.get(),resultBinds_.data())||
                mysql_stmt_store_result(stmt_.get()))
@@ -158,16 +360,29 @@ class query {
       if(code!=0&&code!=MYSQL_DATA_TRUNCATED)
          return std::unexpected(Err("MariaDB fetch",mysql_stmt_error(stmt_.get())));
       for(std::size_t i=0;i<row_.size();++i) {
-         if(resultNulls_[i]){row_[i].reset();continue;}
-         std::string text(resultLengths_[i],'\0');
+         auto& aCell=row_[i];
+         if(resultNulls_[i]) {
+            aCell.strValue.clear();
+            continue;
+         }
+         if(!aCell.boVariable) {
+            if(resultErrors_[i])
+               return std::unexpected(Err("MariaDB fetch","Truncated native scalar"));
+            continue;
+         }
+         aCell.strValue.resize(resultLengths_[i]);
+         if(aCell.strValue.empty()) continue;
          MYSQL_BIND b{};
-         b.buffer_type=MYSQL_TYPE_STRING;
-         b.buffer=text.data();b.buffer_length=static_cast<unsigned long>(text.size());
-         unsigned long actual{};
-         b.length=&actual;
+         b.buffer_type=aCell.boBinary?MYSQL_TYPE_BLOB:MYSQL_TYPE_STRING;
+         b.buffer=aCell.strValue.data();
+         b.buffer_length=static_cast<unsigned long>(aCell.strValue.size());
+         unsigned long uActual{};
+         b.length=&uActual;
          if(mysql_stmt_fetch_column(stmt_.get(),&b,static_cast<unsigned int>(i),0))
             return std::unexpected(Err("MariaDB fetch column",mysql_stmt_error(stmt_.get())));
-         text.resize(actual);row_[i]=std::move(text);
+         if(uActual>aCell.strValue.size())
+            return std::unexpected(Err("MariaDB fetch column","Truncated variable-length value"));
+         aCell.strValue.resize(uActual);
       }
       hasRow_=true;return true;
    }
@@ -196,16 +411,9 @@ public:
       if(!hasRow_)return std::unexpected(Err("MariaDB field","No current row"));
       for(std::size_t i=0;i<columns_.size();++i)
          if(detail::Equal(columns_[i],name)){
-            if(!row_[i])return std::optional<T>{};
+            if(resultNulls_[i])return std::optional<T>{};
             try {
-               if constexpr(std::same_as<T,adecc::Blob>) {
-                  auto const& strData=*row_[i];
-                  std::vector<std::byte> vecData(strData.size());
-                  if(!strData.empty())
-                     std::memcpy(vecData.data(),strData.data(),strData.size());
-                  return std::optional<T>{adecc::Blob{std::move(vecData)}};
-               }
-               else return std::optional<T>{detail::Decode<T>(*row_[i])};
+               return std::optional<T>{ConvertCell<T>(row_[i])};
             }
             catch(std::exception const& e){return std::unexpected(Err("MariaDB field",e.what()));}
          }
