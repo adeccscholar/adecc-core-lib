@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2021 - 2026 adecc Systemhaus GmbH
+﻿// SPDX-FileCopyrightText: 2021 - 2026 adecc Systemhaus GmbH
 // SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 
 /**
@@ -73,10 +73,11 @@ license from adecc Systemhaus GmbH.
 
 #pragma once
 
-#include "database_definitions.h"
-#include "database_exception.h"
-#include "convert_core.h"
-#include "convert_fixed.h"
+#include <adecc\cpp_core\database_definitions.h>
+#include <adecc\cpp_core\database_exception.h>
+#include <adecc\cpp_core\convert_core.h>
+#include <adecc\cpp_core\convert_fixed.h>
+#include <adecc\cpp_core\blob_type.h>
 
 #include <pqxx/pqxx>
 
