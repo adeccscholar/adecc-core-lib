@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2021 - 2026 adecc Systemhaus GmbH
+﻿// SPDX-FileCopyrightText: 2021 - 2026 adecc Systemhaus GmbH
 // SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 
 /**
@@ -39,8 +39,8 @@ license from adecc Systemhaus GmbH.
 
 #pragma once
 
-#include "system_data_persistent_basic.h"
-#include "database.h"
+#include <adecc\cpp_core\details\system_data_persistent_basic.h>
+#include <adecc\cpp_core\database.h>
 
 #include <string>
 #include <string_view>

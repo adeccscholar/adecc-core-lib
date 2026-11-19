@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2021 - 2026 adecc Systemhaus GmbH
+﻿// SPDX-FileCopyrightText: 2021 - 2026 adecc Systemhaus GmbH
 // SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 
 /**
@@ -202,16 +202,18 @@ namespace adecc::db {
             decltype(adecc::selectTplValues<meta_sequence_ty<t_uMetaIndex>>(std::declval<data_ty const&>())),
                                                   data_ty const&>;
 
-      template <std::size_t t_uMetaIndex = 0>
-         requires (t_uMetaIndex < meta_count)
-      static constexpr selected_data_ty<t_uMetaIndex> SelectData(data_ty const& tplData) {
-         if constexpr (is_multi_table) {
-            return adecc::selectTplValues<meta_sequence_ty<t_uMetaIndex>>(tplData);
-            }
-         else {
-            return tplData;
-            }
-         }
+
+template <std::size_t t_uMetaIndex = 0>
+   requires (t_uMetaIndex < meta_count)
+static constexpr decltype(auto) SelectData(data_ty const& tplData) {
+   if constexpr (is_multi_table) {
+      return adecc::selectTplValues<meta_sequence_ty<t_uMetaIndex>>(tplData);
+      }
+   else {
+      return (tplData);
+      }
+   }
+
 
       template <std::size_t t_uMetaIndex = 0>
          requires (t_uMetaIndex < meta_count)
