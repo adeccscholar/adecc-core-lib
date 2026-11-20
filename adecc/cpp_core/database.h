@@ -1409,6 +1409,22 @@ namespace adecc {
                throw std::runtime_error{ "column count mismatch vs. result Tup" };
             }
 
+            // Typed row extraction addresses columns by their SQL result name.
+            // Ambiguous labels must fail before GetField(name) can silently
+            // read the first matching column for multiple tuple positions.
+            for (std::size_t uLeft = 0; uLeft < vecNames.size(); ++uLeft) {
+               for (std::size_t uRight = uLeft + 1; uRight < vecNames.size(); ++uRight) {
+                  if (vecNames[uLeft] == vecNames[uRight]) {
+                     throw std::runtime_error{
+                        "ambiguous SQL result column '" + vecNames[uLeft] +
+                        "' at positions " + std::to_string(uLeft) +
+                        " and " + std::to_string(uRight) +
+                        "; provide unique SQL aliases"
+                     };
+                  }
+               }
+            }
+
             return Tup{
                     GetTupleElem_<std::tuple_element_t<Is, Tup>>(aQry, vecNames[Is])...
             };
